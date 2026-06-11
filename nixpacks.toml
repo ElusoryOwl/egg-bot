@@ -1,2 +1,5 @@
 [phases.setup]
 nixPkgs = ["python311", "python311Packages.pip"]
+
+[variables]
+MISE_PYTHON_GITHUB_ATTESTATIONS = "false"
