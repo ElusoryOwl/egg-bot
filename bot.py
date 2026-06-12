@@ -2,6 +2,7 @@ import os
 import random
 import sqlite3
 import asyncio
+import aiohttp
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
@@ -584,6 +585,9 @@ async def reminder_loop():
 @client.event
 async def on_ready():
     init_db()
+    from interactions import init_interactions_db, register_action_commands
+    init_interactions_db(get_db())
+    register_action_commands(tree, get_db)
     await tree.sync()
     asyncio.create_task(reminder_loop())
     print(f"✅ Logged in as {client.user} — all systems go!")
