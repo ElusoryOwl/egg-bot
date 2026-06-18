@@ -24,8 +24,9 @@ tree = app_commands.CommandTree(client)
 DB_PATH           = "egg_bot.db"
 STREAK_ROLE_NAME  = "🐣 Egg Streak Legend"
 HISTORY_DAYS      = 7
-GOLDEN_EGG_CHANCE = 1 / 100
-FRIDAY_BONUS      = 0.05
+GOLDEN_EGG_CHANCE  = 1 / 75
+FRIDAY_BONUS       = 0.07
+MAX_THROWS_PER_DAY = 3
 
 # ── Locale → Timezone ─────────────────────────────────────────────────────────
 
@@ -73,8 +74,10 @@ def init_db():
             longest_streak INTEGER NOT NULL DEFAULT 0,
             total_throws   INTEGER NOT NULL DEFAULT 0,
             total_hatches  INTEGER NOT NULL DEFAULT 0,
-            reminders      INTEGER NOT NULL DEFAULT 0
+            reminders      INTEGER NOT NULL DEFAULT 0,
+            throws_today   INTEGER NOT NULL DEFAULT 0
         );
+
         CREATE TABLE IF NOT EXISTS history (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id    INTEGER NOT NULL,
@@ -83,7 +86,12 @@ def init_db():
             chicks     INTEGER NOT NULL DEFAULT 0
         );
     """)
-    conn.commit()
+    # Migrate existing DBs: add throws_today if missing
+    try:
+        conn.execute("ALTER TABLE users ADD COLUMN throws_today INTEGER NOT NULL DEFAULT 0")
+        conn.commit()
+    except Exception:
+        pass  # Column already exists
 
 def get_user(user_id: int) -> sqlite3.Row | None:
     return get_db().execute(
@@ -149,9 +157,9 @@ def throw_egg(is_friday: bool = False) -> dict:
     if roll < GOLDEN_EGG_CHANCE:
         return {"hatched": True, "chicks": 1, "golden": True}
     bonus = FRIDAY_BONUS if is_friday else 0
-    if roll < (1 / 32) + bonus:
+    if roll < (1 / 25) + bonus:
         return {"hatched": True, "chicks": 4, "golden": False}
-    if roll < (1 / 8) + bonus:
+    if roll < (1 / 6) + bonus:
         return {"hatched": True, "chicks": 1, "golden": False}
     return {"hatched": False, "chicks": 0, "golden": False}
 
@@ -306,19 +314,21 @@ async def throw_egg_command(interaction: discord.Interaction):
     today_str = now.date().isoformat()
     is_friday = now.weekday() == 4
 
-    # Already thrown today?
-    if row["last_throw"] == today_str:
+    # Reset throws_today counter if it's a new day
+    throws_today = row["throws_today"] if row["last_throw"] == today_str else 0
+
+    # All throws used up?
+    if throws_today >= MAX_THROWS_PER_DAY:
         remaining = get_midnight_remaining(tz)
         embed = discord.Embed(
-            title="🥚 Already threw today!",
+            title="🥚 No eggs left today!",
             description=(
-                f"You've already thrown your egg today.\n"
-                f"Resets at **midnight ({row['timezone']})**.\n"
+                f"You've used all **{MAX_THROWS_PER_DAY} eggs** for today.\n"
                 f"Come back in **{remaining}**!"
             ),
             color=0xFFA500,
         )
-        embed.set_footer(text="One egg per day — make it count!")
+        embed.set_footer(text=f"{MAX_THROWS_PER_DAY} eggs per day — resets at midnight!")
         if interaction.response.is_done():
             await interaction.followup.send(embed=embed, ephemeral=True)
         else:
@@ -332,12 +342,15 @@ async def throw_egg_command(interaction: discord.Interaction):
     chicks  = result["chicks"]
     name    = interaction.user.display_name
 
-    # Streak calculation
+    # Streak calculation — only on first throw of the day
     yesterday = (now.date() - timedelta(days=1)).isoformat()
-    if hatched:
-        new_streak = (row["streak"] + 1) if row["last_throw"] == yesterday else 1
+    if throws_today == 0:
+        if hatched:
+            new_streak = (row["streak"] + 1) if row["last_throw"] == yesterday else 1
+        else:
+            new_streak = 0
     else:
-        new_streak = 0
+        new_streak = row["streak"]
 
     longest    = max(row["longest_streak"], new_streak)
     result_str = "golden" if golden else ("hatch" if hatched else "miss")
@@ -345,6 +358,7 @@ async def throw_egg_command(interaction: discord.Interaction):
     upsert_user(
         user_id,
         last_throw     = today_str,
+        throws_today   = throws_today + 1,
         streak         = new_streak,
         longest_streak = longest,
         total_throws   = row["total_throws"] + 1,
@@ -417,7 +431,13 @@ async def throw_egg_command(interaction: discord.Interaction):
         value=f"{row['total_hatches'] + (1 if hatched else 0)}/{row['total_throws'] + 1}",
         inline=True,
     )
-    embed.set_footer(text="Resets at midnight")
+    throws_left = MAX_THROWS_PER_DAY - (throws_today + 1)
+    if throws_left > 0:
+        s = "s" if throws_left != 1 else ""
+        footer_txt = f"{throws_left} egg{s} left today • Resets at midnight"
+    else:
+        footer_txt = "No eggs left today • Resets at midnight"
+    embed.set_footer(text=footer_txt)
     embed.timestamp = now
 
     if interaction.response.is_done():
