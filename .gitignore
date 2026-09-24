@@ -1,4 +1,6 @@
 .env
 egg_bot.db
+backups/
 __pycache__/
 *.pyc
+.pytest_cache/
